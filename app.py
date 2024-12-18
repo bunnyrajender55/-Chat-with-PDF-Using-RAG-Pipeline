@@ -14,7 +14,7 @@ import plotly.express as px
 from PIL import Image
 
 # Set OpenAI API key
-openai.api_key = "YOUR_OPENAI_API_KEY"
+openai.api_key = "OPENAI_API_KEY"
 
 # Initialize models
 embedding_model = SentenceTransformer('all-MiniLM-L6-v2')  # Pre-trained embedding model
@@ -45,9 +45,14 @@ def extract_pdf_data(pdf_path):
 def extract_tables(pdf_path, page_numbers):
     tables = []
     for page_num in page_numbers:
-        table = camelot.read_pdf(pdf_path, pages=str(page_num))
-        for t in table:
-            tables.append(t.df)
+        try:
+            # Specify parsing flavor for better flexibility
+            table = camelot.read_pdf(pdf_path, pages=str(page_num), flavor='stream')  # or 'lattice'
+            for t in table:
+                if not t.df.empty:  # Ensure the table is not empty
+                    tables.append({'page_num': page_num, 'data': t.df})
+        except Exception as e:
+            print(f"Error extracting table from page {page_num}: {e}")
     return tables
 
 # Function to extract images and run OCR
@@ -56,7 +61,14 @@ def extract_images_and_ocr(pdf_path):
     pdf_document = fitz.open(pdf_path)
     
     for page_num in range(pdf_document.page_count):
-        page = pdf_document.load_page(page_num)
+        page = pdf_document[page_num]
+        
+        # Check if the page contains images
+        images = page.get_images(full=True)
+        if not images:
+            continue  # Skip OCR if no images are present
+        
+        # Convert page to image
         pix = page.get_pixmap()
         image_path = f"page_{page_num + 1}.png"
         
@@ -67,7 +79,9 @@ def extract_images_and_ocr(pdf_path):
         results = reader.readtext(image_path)
         text = "\n".join([result[1] for result in results])
         ocr_results[page_num + 1] = text
+
     return ocr_results
+
 
 # Index chunks in FAISS and store metadata
 def index_chunks(chunks, doc_name):
@@ -81,9 +95,15 @@ def process_multiple_pdfs(pdf_paths):
     for pdf_path in pdf_paths:
         doc_name = pdf_path.split("/")[-1]
         
-        # Extract text and tables
+        # Extract text chunks and index them
         chunks = extract_pdf_data(pdf_path)
         index_chunks(chunks, doc_name)
+        
+        # Extract tables and index table data
+        table_data = extract_tables(pdf_path, range(1, len(chunks) + 1))
+        for table in table_data:
+            table_content = table['data'].to_string(index=False)  # Convert DataFrame to string
+            index_chunks([(table_content, table['page_num'])], doc_name)
         
         # Extract and print OCR results from images
         ocr_results = extract_images_and_ocr(pdf_path)
@@ -145,7 +165,7 @@ if uploaded_files:
 
     # Process PDFs
     process_multiple_pdfs(pdf_paths)
-    st.success("PDFs processed successfully!")
+    st.success("PDFs processed successfully, including tabular data!")
 
 # Query input
 query = st.text_input("Ask a question about the PDFs:")
